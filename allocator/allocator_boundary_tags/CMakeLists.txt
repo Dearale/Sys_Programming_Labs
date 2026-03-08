@@ -2,7 +2,7 @@ add_subdirectory(tests)
 
 add_library(
         sys_prog_allctr_allctr_bndr_tgs
-        src/allocator_boundary_tags.cpp)
+        src/allocator_boundary_tags.cpp )
 
 target_include_directories(
         sys_prog_allctr_allctr_bndr_tgs
