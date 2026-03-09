@@ -281,7 +281,7 @@ allocator_sorted_list::allocator_sorted_list(
 [[nodiscard]] void *allocator_sorted_list::do_allocate_sm(
     size_t size)
 {
-    if (_trusted_memory == nullptr || size == 0)
+    if (_trusted_memory == nullptr)
         return nullptr;
 
     std::lock_guard<std::mutex> lock(mutex_ref(_trusted_memory));

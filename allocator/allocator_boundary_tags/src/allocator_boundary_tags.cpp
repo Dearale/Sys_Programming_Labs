@@ -243,7 +243,7 @@ allocator_boundary_tags::allocator_boundary_tags(
 [[nodiscard]] void *allocator_boundary_tags::do_allocate_sm(
     size_t size)
 {
-    if (_trusted_memory == nullptr || size == 0)
+    if (_trusted_memory == nullptr)
         return nullptr;
     
     std::lock_guard<std::mutex> lock(mutex_ref(_trusted_memory));
@@ -268,12 +268,20 @@ allocator_boundary_tags::allocator_boundary_tags(
 
         if (cur_size >= block_metadata_size + size)
         {
+            ptrdiff_t selected_size = 0;
+            if (selected_start != nullptr)
+            {
+                selected_size = (selected_next_occupied != nullptr
+                    ? bytes(selected_next_occupied)
+                    : memory_end_ptr(_trusted_memory)) - bytes(selected_start);
+
+            }
             if (selected_start == nullptr
                 || (mode == fit_mode::first_fit)
                 || (mode == fit_mode::the_best_fit
-                    && cur_size < bytes(selected_next_occupied) - bytes(selected_start))
+                    && cur_size < selected_size)
                 || (mode == fit_mode::the_worst_fit
-                    && cur_size > bytes(selected_next_occupied) - bytes(selected_start)))
+                    && cur_size > selected_size))
             {
                 selected_prev_occupied = prev_occupied_block;
                 selected_next_occupied = next_occupied_block;
@@ -457,7 +465,7 @@ bool allocator_boundary_tags::do_is_equal(const std::pmr::memory_resource &other
 bool allocator_boundary_tags::boundary_iterator::operator==(
         const allocator_boundary_tags::boundary_iterator &other) const noexcept
 {
-    return _occupied_ptr == other._occupied_ptr;
+    return _occupied_ptr == other._occupied_ptr && _occupied == other._occupied;
 }
 
 bool allocator_boundary_tags::boundary_iterator::operator!=(
@@ -468,17 +476,49 @@ bool allocator_boundary_tags::boundary_iterator::operator!=(
 
 allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_iterator::operator++() & noexcept
 {
-    if (_occupied_ptr != nullptr)
+    if (_occupied_ptr == nullptr && occupied())
+        return *this;
+
+    if (_occupied_ptr == nullptr)
+    {
+        _occupied_ptr = first_occupied_ref(_trusted_memory);
+        _occupied = true;
+        return *this;
+    }
+
+    if (occupied())
+    {
+        void* new_ptr = next_occupied_ref(_occupied_ptr);
+        if (new_ptr != nullptr && bytes(new_ptr) == next_physical_block(_occupied_ptr))
+            _occupied_ptr = new_ptr;
+        else
+            _occupied = false;
+
+    }
+    else
+    {
         _occupied_ptr = next_occupied_ref(_occupied_ptr);
-    _occupied = _occupied_ptr != nullptr;
+        _occupied = true;
+    }
     return *this;
 }
 
 allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_iterator::operator--() & noexcept
 {
-    if (_occupied_ptr != nullptr)
-        _occupied_ptr = prev_occupied_ref(_occupied_ptr);
-    _occupied = _occupied_ptr != nullptr;
+    if (_occupied_ptr == nullptr)
+        return *this;
+
+    if (occupied())
+    {
+        void* prev_ptr = prev_occupied_ref(_occupied_ptr);
+        if ((prev_ptr != nullptr && next_physical_block(prev_ptr) != bytes(_occupied_ptr))
+                || (prev_ptr == nullptr && first_block_ptr(_trusted_memory) != _occupied_ptr))
+            _occupied = false;
+
+        _occupied_ptr = prev_ptr;
+    }
+    else
+        _occupied = true;
     return *this;
 }
 
@@ -498,7 +538,25 @@ allocator_boundary_tags::boundary_iterator allocator_boundary_tags::boundary_ite
 
 size_t allocator_boundary_tags::boundary_iterator::size() const noexcept
 {
-    return _occupied_ptr == nullptr ? 0 : allocator_boundary_tags::allocator_metadata_size + block_size_ref(_occupied_ptr);
+    if (_occupied_ptr == nullptr)
+    {
+        if (occupied()) return 0;
+
+        void* first_occ = first_occupied_ref(_trusted_memory);
+        if (first_occ == nullptr) return memory_end_ptr(_trusted_memory) - first_block_ptr(_trusted_memory);
+
+        return bytes(first_occ) - first_block_ptr(_trusted_memory);
+    }
+
+    if (occupied())
+        return occupied_block_metadata_size + block_size_ref(_occupied_ptr);
+
+
+    void* next_occ = next_occupied_ref(_occupied_ptr);
+    if (next_occ == nullptr)
+        return memory_end_ptr(_trusted_memory) - next_physical_block(_occupied_ptr);
+
+    return bytes(next_occ) - next_physical_block(_occupied_ptr);
 }
 
 bool allocator_boundary_tags::boundary_iterator::occupied() const noexcept
@@ -508,23 +566,43 @@ bool allocator_boundary_tags::boundary_iterator::occupied() const noexcept
 
 void* allocator_boundary_tags::boundary_iterator::operator*() const noexcept
 {
-    return _occupied_ptr;
+    if (_occupied_ptr == nullptr)
+    {
+        if (occupied())
+            return nullptr;
+
+        return first_block_ptr(_trusted_memory);
+    }
+
+    if (occupied()) return _occupied_ptr;
+
+    return next_physical_block(_occupied_ptr);
 }
 
 allocator_boundary_tags::boundary_iterator::boundary_iterator()
 
-    : _occupied_ptr(nullptr), _occupied(false), _trusted_memory(nullptr)
+    : _occupied_ptr(nullptr), _occupied(true), _trusted_memory(nullptr)
 {
 }
 
 allocator_boundary_tags::boundary_iterator::boundary_iterator(void *trusted)
-    : _occupied_ptr(nullptr), _occupied(false), _trusted_memory(trusted)
+    : _occupied_ptr(nullptr), _occupied(true), _trusted_memory(trusted)
 {
     if (trusted == nullptr)
         return;
 
-    _occupied_ptr = first_occupied_ref(trusted);
-    _occupied = _occupied_ptr != nullptr;
+    
+    void* first_occ = first_occupied_ref(trusted);
+    if (first_occ != nullptr && first_block_ptr(trusted) == bytes(first_occ))
+    {
+        _occupied_ptr = first_occ;
+        _occupied = true;
+    }
+    else
+    {
+        _occupied_ptr = nullptr;
+        _occupied = false;
+    }
 }
 
 void *allocator_boundary_tags::boundary_iterator::get_ptr() const noexcept
